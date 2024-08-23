@@ -24,6 +24,9 @@ from bot.exceptions import InvalidSession
 from .headers import headers
 from .agents import generate_random_user_agent
 
+from tonsdk.crypto import mnemonic_to_wallet_key
+from tonsdk.utils import to_nano
+
 
 class Tapper:
     def __init__(self, tg_client: Client):
@@ -124,7 +127,7 @@ class Tapper:
 
             InputBotApp = types.InputBotAppShortName(bot_id=peer, short_name="join")
 
-            if settings.REF_ID == '':
+            if settings.REF_ID != '':
                 logger.critical('PLEASE ENTER REF ARGUMENT (AFTER STARTAPP?= TEXT) ((YOU CAN PUT UR REFERRAL, '
                                 'OTHERWISE BOT WONT WORK))')
                 await http_client.close()
@@ -388,6 +391,8 @@ class Tapper:
 
                 status, balance, reference, streak = await self.join_request(http_client=http_client,
                                                                              init_data=init_data)
+
+                # TODO insert generate MNEMONIC and create wallet. and login in here.
 
                 if streak_daily != streak:
                     streak_daily = streak
