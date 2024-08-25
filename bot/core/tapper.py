@@ -6,6 +6,11 @@ import random
 import aiohttp
 import json
 
+from tonsdk.contract.wallet import Wallets, WalletVersionEnum
+from tonsdk.utils import sign_message, bytes_to_b64str
+import time
+import base64
+
 from aiocfscrape import CloudflareScraper
 from aiohttp_proxy import ProxyConnector
 from better_proxy import Proxy
@@ -23,10 +28,6 @@ from bot.exceptions import InvalidSession
 
 from .headers import headers
 from .agents import generate_random_user_agent
-
-from tonsdk.crypto import mnemonic_to_wallet_key
-from tonsdk.utils import to_nano
-
 
 class Tapper:
     def __init__(self, tg_client: Client):
@@ -127,7 +128,7 @@ class Tapper:
 
             InputBotApp = types.InputBotAppShortName(bot_id=peer, short_name="join")
 
-            if settings.REF_ID != '':
+            if settings.REF_ID == '':
                 logger.critical('PLEASE ENTER REF ARGUMENT (AFTER STARTAPP?= TEXT) ((YOU CAN PUT UR REFERRAL, '
                                 'OTHERWISE BOT WONT WORK))')
                 await http_client.close()
@@ -190,11 +191,11 @@ class Tapper:
             response_json = await response.json()
             balance = response_json.get('balance')
             reference = response_json.get('reference')
-            streak = response_json.get('streak')
+            wallet = response_json.get('wallet')
             return (True,
                     balance,
                     reference,
-                    streak)
+                    wallet)
         except Exception as error:
             logger.error(f"<light-yellow>{self.session_name}</light-yellow> | Join request error - {error}")
 
@@ -226,7 +227,7 @@ class Tapper:
             init_data = (f"user={user_data_encoded}&chat_instance={chat_instance}&chat_type={chat_type}&"
                          f"start_param={start_param}&auth_date={auth_date}&hash={hash_value}")
 
-            status, balance, new_reference, streak = await self.join_request(http_client=http_client,
+            status, balance, new_reference, wallet = await self.join_request(http_client=http_client,
                                                                              init_data=init_data)
             if not status:
                 logger.error(
@@ -359,6 +360,190 @@ class Tapper:
         finally:
             if self.tg_client.is_connected:
                 await self.tg_client.disconnect()
+            
+
+    async def create_tonkeeper_payload(self, http_client, user_id, reference):
+        
+        mnemonics, pub_k, priv_k, wallet = Wallets.create(WalletVersionEnum.v4r2, workchain=0)
+        
+        nonce_response = await http_client.post(f'https://api.onetime.dog/wallet/nonce?user_id={user_id}&reference={reference}')
+        nonce_data = (json.loads(await nonce_response.text())).get("data", "")
+        logger.info(f"{self.session_name} | Data from wallet/nonce: {nonce_data}")
+        
+        current_time = int(time.time())
+        domain = "onetime.dog"
+        message = f"{current_time}{domain}"
+        signature_obj = sign_message(message.encode(), priv_k)
+        signature = base64.b64encode(signature_obj.signature).decode()
+        print(signature)
+        
+        payload = {
+            "state": {
+                "device": {
+                    "platform": "android",
+                    "appName": "Tonkeeper",
+                    "appVersion": "4.5.2",
+                    "maxProtocolVersion": 2,
+                    "features": ["SendTransaction", {"name": "SendTransaction", "maxMessages": 4}]
+                },
+                "provider": "http",
+                "account": {
+                    "address": wallet.address.to_string(False, True, True),
+                    "chain": "-239",
+                    "walletStateInit": bytes_to_b64str((wallet.create_state_init()['state_init']).to_boc(False)),
+                    "publicKey": pub_k.hex()
+                },
+                "connectItems": {
+                    "tonProof": {
+                        "name": "ton_proof",
+                        "proof": {
+                            "timestamp": current_time,
+                            "domain": {"lengthBytes": len(domain), "value": domain},
+                            "signature": signature,
+                            "payload": nonce_data
+                        }
+                    }
+                }
+            },
+            "proof": {
+                "timestamp": current_time,
+                "domain": {"lengthBytes": len(domain), "value": domain},
+                "signature": signature,
+                "payload": nonce_data
+            },
+            "wallet": {
+                "address": wallet.address.to_string(False, True, True),
+                "publicKey": pub_k.hex(),
+                "initState": bytes_to_b64str((wallet.create_state_init()['state_init']).to_boc(False))
+            }
+        }
+
+        return payload, mnemonics
+        # publicKey = pub_k.hex()
+        # address = wallet.address.to_string(False, True, True)
+        # stateInit = bytes_to_b64str((wallet.create_state_init()['state_init']).to_boc(False))
+        # state = {
+        #     "device": {
+        #         "platform": "android",
+        #         "appName": "Tonkeeper",
+        #         "appVersion": "4.5.2",
+        #         "maxProtocolVersion": 2,
+        #         "features": [
+        #             "SendTransaction",
+        #             {
+        #                 "name": "SendTransaction",
+        #                 "maxMessages": 4
+        #             }
+        #         ]
+        #     },
+        #     "provider": "http",
+        #     "account": {
+        #         "address": address,
+        #         "chain": "-239",
+        #         "walletStateInit": stateInit,
+        #         "publicKey": publicKey
+        #     },
+        #     "connectItems": {
+        #         "tonProof": {
+        #             "name": "ton_proof",
+        #             "proof": {
+        #                 "timestamp": current_time,
+        #                 "domain": {"lengthBytes": len(domain), "value": domain},
+        #                 "signature": signature,
+        #                 "payload": nonce_data
+        #             }
+        #         }
+        #     },
+        #     "name": "Tonkeeper",
+        #     "appName": "tonkeeper",
+        #     "imageUrl": "https://tonkeeper.com/assets/tonconnect-icon.png",
+        #     "aboutUrl": "https://tonkeeper.com",
+        #     "tondns": "tonkeeper.ton",
+        #     "platforms": ["ios", "android", "chrome", "firefox", "macos"],
+        #     "bridgeUrl": "https://bridge.tonapi.io/bridge",
+        #     "universalLink": "https://app.tonkeeper.com/ton-connect",
+        #     "deepLink": "tonkeeper-tc://",
+        #     "jsBridgeKey": "tonkeeper",
+        #     "injected": False,
+        #     "embedded": False,
+        #     "openMethod": "qrcode"
+        # }
+
+        # proof = {
+        #     "timestamp": current_time,
+        #     "domain": {
+        #         "lengthBytes": len(domain),
+        #         "value": domain
+        #     },
+        #     "signature": signature,
+        #     "payload": nonce_data
+        # }
+
+        # payload = {
+        #     "state": state,
+        #     "proof": proof,
+        #     "wallet": {
+        #         "address": address,
+        #         "publicKey": publicKey,
+        #         "initState": stateInit
+        #     },
+        #     "telegramInitData": tg_web_data
+        # }
+        # logger.info(f"{self.session_name} | Seed phrase: ", " ".join(mnemonics))
+        # logger.info(f"{self.session_name} | Wallet address: ", wallet.address.to_string(True, True, False))
+        
+        # connect_response = await http_client.post('https://api.onetime.dog/wallet/connect', json=json.dumps(payload), headers=headers)
+        
+        
+        # random_client_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=64))
+        # random_last_event_id = random.randint(1000000000000000, 9999999999999999)
+        # print(f"{random_last_event_id} {random_client_id}")
+        # await http_client.get(f'https://bridge.tonapi.io/bridge/events?client_id={random_client_id}&last_event_id={random_last_event_id}', headers=headers2)
+
+        # return {
+        #     "wallet": wallet,
+        #     "mnemonics": mnemonics,
+        #     "connect_response": await connect_response.text(),
+        #     "client_id": random_client_id
+        # }
+        # logger.info(f"{self.session_name} | Response status: {response_status}")
+        # response_text = await response.text()
+        # try:
+        #     response_json = json.loads(response_text)
+        # except json.JSONDecodeError as e:
+        #     logger.error(f"{self.session_name} | JSON decode error: {e}")
+        #     logger.debug(f"Raw response: {response_text}")
+        # answer = data.get("connected", False)
+        # logger.info(f"{self.session_name} | Connected: {answer}")
+        # if answer:
+        #     return True
+        # else:
+        #     return False
+
+    async def create_recovery_email():
+        try:
+            await http_client.post(f"https://walletbot.me/v2api/recovery-email/?product=wallet")
+            await asyncio.sleep(5)
+            await self.verify_task(slug, http_client, reference, reward)
+            await asyncio.sleep(3)
+            await self.tg_client.update_profile(first_name=first_name)
+        except Exception as error:
+            logger.error(
+                f"<light-yellow>{self.session_name}</light-yellow> | Error  creating recovery email task: {error}")
+        finally:
+            if self.tg_client.is_connected:
+                await self.tg_client.disconnect()
+
+    # TODO request claim function in here
+    async def request_claim():
+        try:
+            await http_client.post(f"https://walletbot.me/v2api/claim")   # TODO claim api here
+        except:
+            logger.error(
+                f"<light-yellow>{self.session_name}</light-yellow> | Error  request claim task: {error}")
+        finally:
+            if self.tg_client.is_connected:
+                await self.tg_client.disconnect()
 
     async def run(self, proxy: str | None) -> None:
         proxy_conn = ProxyConnector().from_url(proxy) if proxy else None
@@ -389,22 +574,12 @@ class Tapper:
                 init_data = (f"user={user_data_encoded}&chat_instance={chat_instance}&chat_type={chat_type}&"
                              f"start_param={start_param}&auth_date={auth_date}&hash={hash_value}")
 
-                status, balance, reference, streak = await self.join_request(http_client=http_client,
+                status, balance, reference, wallet = await self.join_request(http_client=http_client,
                                                                              init_data=init_data)
 
-                # TODO insert generate MNEMONIC and create wallet. and login in here.
-
-                if streak_daily != streak:
-                    streak_daily = streak
-                    if first_run:
-                        logger.success(f"<light-yellow>{self.session_name}</light-yellow> | Successfully remembered "
-                                       f"streak and maybe get it (first run)")
-                    else:
-                        logger.success(f"<light-yellow>{self.session_name}</light-yellow> | Successfully got new streak"
-                                       f", now {streak_daily}")
-
                 if status and not referred:
-                    logger.info(f"<light-yellow>{self.session_name}</light-yellow> | Successfully logged and referral, "
+                    
+                    logger.info(f"<light-yellow>{self.session_name} {reference} {self}</light-yellow> | Successfully logged and referral, "
                                 f"balance: {balance}")
                     referred = True
 
@@ -413,8 +588,27 @@ class Tapper:
                     if tasks:
                         await self.complete_tasks(tasks, http_client=http_client, proxy=proxy, reference=reference)
 
-                logger.info(f"<light-yellow>{self.session_name}</light-yellow> | Going sleep 12h")
+                # artem wallet connection feature in here.
+                logger.info(f"{self.session_name} | Balance: {balance}")
+                logger.info(f"{self.session_name} | Wallet: {wallet}")
+                payload, mnemonics = await self.create_tonkeeper_payload(http_client=http_client, user_id=self.user_id, reference=reference)
+                # Добавляем telegramInitData в payload
+                payload["telegramInitData"] = init_data
 
+                # Отправляем запрос на подключение
+                response = await http_client.post(url=f'https://api.onetime.dog/wallet/connect', json=payload, headers=headers)
+                response_text = await response.text()
+                response_status = response.status
+                
+                logger.info(f"{self.session_name} | Post Response: {response_status} {response_text}")
+                logger.info(f"{self.session_name} | Seed phrase: {' '.join(mnemonics)}")
+                random_client_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=64))
+                
+
+
+
+
+                logger.info(f"<light-yellow>{self.session_name}</light-yellow> | Going sleep 12h")
                 await asyncio.sleep(12 * 3600)
 
             except InvalidSession as error:
